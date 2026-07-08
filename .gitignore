@@ -1,0 +1,44 @@
+# Secrets — NEVER commit
+.env
+*.key
+*.pem
+
+# Private docs — keep local, not on public repo
+Functioning.md
+Haasey.md
+
+# Data / runtime
+*.db
+*.sqlite
+*.sqlite3
+data/
+logs/
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+
+# Local runtime / personal
+*.log
+*.err
+*.bak
+# personal launcher, hardcoded absolute path
+run_live.bat
+scratchpad/
+
+# ML model caches (downloaded, large)
+*.pt
+*.onnx
+.cache/huggingface/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
