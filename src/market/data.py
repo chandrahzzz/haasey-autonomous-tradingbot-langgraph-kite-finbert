@@ -10,11 +10,17 @@ from __future__ import annotations
 
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
 import pandas as pd
+
+# Shared pool for bounded yfinance calls. yfinance issues HTTP requests with no
+# timeout, so a slow socket would otherwise freeze the whole poll loop.
+_YF_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="yf")
+_YF_TIMEOUT = 4.0  # seconds per live-quote fetch
 
 
 @dataclass
@@ -36,6 +42,7 @@ class MarketData:
         self.use_live_quotes = False
         self._live_cache: dict[str, tuple[float, float]] = {}
         self._live_ttl = 45.0
+        self._synthetic_fallback = False  # True while live quotes are failing
         # NSE index symbols -> Yahoo Finance tickers (equities just get ".NS").
         self._yahoo_index = {
             "NIFTY 50": "^NSEI", "NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK",
@@ -87,7 +94,14 @@ class MarketData:
         if self.use_live_quotes:
             v = self._live_quote(symbol)
             if v is not None:
+                if self._synthetic_fallback:
+                    self._synthetic_fallback = False
+                    print("[data] live quotes RECOVERED — using real prices again.")
                 return v
+            if not self._synthetic_fallback:
+                self._synthetic_fallback = True
+                print(f"[data] WARNING: live quote for {symbol} unavailable — "
+                      f"FALLING BACK TO SYNTHETIC prices. P&L is not real.")
         return self._synthetic_tick(symbol)
 
     def _live_quote(self, symbol: str) -> Optional[float]:
@@ -98,21 +112,35 @@ class MarketData:
             return hit[1]
         price = None
         try:
-            import yfinance as yf
-
-            fi = yf.Ticker(self._yahoo_ticker(symbol)).fast_info
-            price = getattr(fi, "last_price", None)
-            if price is None:
-                try:
-                    price = fi["lastPrice"]
-                except Exception:
-                    price = None
-            price = float(price) if price else None
+            fut = _YF_POOL.submit(self._fetch_yf_price, symbol)
+            price = fut.result(timeout=_YF_TIMEOUT)
+        except FutureTimeout:
+            # Abandon the hung call; the worker thread finishes on its own later.
+            price = None
         except Exception:
             price = None
         if price:
             self._live_cache[symbol] = (time.time(), price)
         return price
+
+    @staticmethod
+    def _fetch_yf_price_impl(ticker: str) -> Optional[float]:
+        import yfinance as yf
+
+        fi = yf.Ticker(ticker).fast_info
+        price = getattr(fi, "last_price", None)
+        if price is None:
+            try:
+                price = fi["lastPrice"]
+            except Exception:
+                price = None
+        return float(price) if price else None
+
+    def _fetch_yf_price(self, symbol: str) -> Optional[float]:
+        try:
+            return self._fetch_yf_price_impl(self._yahoo_ticker(symbol))
+        except Exception:
+            return None
 
     def _synthetic_tick(self, symbol: str) -> float:
         st = self._synth.get(symbol)
